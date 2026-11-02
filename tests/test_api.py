@@ -12,12 +12,17 @@ Tests cover the 7 stub API endpoints:
   POST /api/simulation
 """
 
+import sys
+import os
 import pytest
 from fastapi.testclient import TestClient
+
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from services.main import app
 
 client = TestClient(app)
+
 
 
 # ---------------------------------------------------------------------------
@@ -251,3 +256,158 @@ def test_simulation_low_values_return_lower_risk():
     low_risk  = low_response.json()["updated_zone_risk"]["risk_score"]
     high_risk = high_response.json()["updated_zone_risk"]["risk_score"]
     assert low_risk < high_risk
+
+
+# ---------------------------------------------------------------------------
+# POST & GET /api/routes/safe-route
+# ---------------------------------------------------------------------------
+def test_safe_route_vehicle_mode():
+    """Valid request in vehicle mode should return 200 with GeoJSON LineString and simulation metadata."""
+    payload = {
+        "origin_lat": 18.526,
+        "origin_lng": 73.858,
+        "shelter_id": "shelter-b",
+        "travel_mode": "vehicle"
+    }
+    response = client.post("/api/routes/safe-route", json=payload)
+    assert response.status_code == 200
+    data = response.json()
+
+    # GeoJSON validation
+    assert data["type"] == "Feature"
+    assert "geometry" in data
+    assert data["geometry"]["type"] == "LineString"
+    assert isinstance(data["geometry"]["coordinates"], list)
+    assert len(data["geometry"]["coordinates"]) >= 2
+    # Verify longitude/latitude order in GeoJSON coordinates
+    for pt in data["geometry"]["coordinates"]:
+        assert len(pt) == 2
+        assert 70.0 <= pt[0] <= 80.0  # lng
+        assert 15.0 <= pt[1] <= 25.0  # lat
+
+    # Route metadata
+    assert data["travel_mode"] == "vehicle"
+    assert data["distance_km"] > 0
+    assert data["estimated_minutes"] > 0
+    assert "Route C" in data["route_name"]
+    assert data["is_simulated"] is True
+    assert data["status"] in ("SIMULATED_SAFE", "SIMULATED_CAUTION")
+    assert "safety_disclaimer" in data
+    assert "not guaranteed safe" in data["safety_disclaimer"].lower()
+    assert len(data["avoided_hazards"]) >= 1
+
+
+def test_safe_route_pedestrian_mode():
+    """Pedestrian mode should calculate longer travel duration than vehicle mode for the same route."""
+    veh_res = client.post("/api/routes/safe-route", json={
+        "origin_lat": 18.526,
+        "origin_lng": 73.858,
+        "shelter_id": "shelter-b",
+        "travel_mode": "vehicle"
+    })
+    ped_res = client.post("/api/routes/safe-route", json={
+        "origin_lat": 18.526,
+        "origin_lng": 73.858,
+        "shelter_id": "shelter-b",
+        "travel_mode": "pedestrian"
+    })
+    assert veh_res.status_code == 200
+    assert ped_res.status_code == 200
+
+    veh_data = veh_res.json()
+    ped_data = ped_res.json()
+
+    assert ped_data["travel_mode"] == "pedestrian"
+    # Walking duration should be significantly longer than driving
+    assert ped_data["estimated_minutes"] > veh_data["estimated_minutes"]
+    assert ped_data["geometry"]["type"] == "LineString"
+    assert ped_data["is_simulated"] is True
+
+
+def test_safe_route_invalid_coordinates():
+    """Coordinates out of physical bounds [-90, 90] or outside service area should return 400."""
+    # Out of physical latitude bounds
+    res_lat_oob = client.post("/api/routes/safe-route", json={
+        "origin_lat": 999.0,
+        "origin_lng": 73.858,
+        "shelter_id": "shelter-b"
+    })
+    assert res_lat_oob.status_code == 400
+    assert "invalid coordinates" in res_lat_oob.json()["detail"].lower()
+
+    # Out of operational service area (Null Island: 0, 0)
+    res_outside = client.post("/api/routes/safe-route", json={
+        "origin_lat": 0.0,
+        "origin_lng": 0.0,
+        "shelter_id": "shelter-b"
+    })
+    assert res_outside.status_code == 400
+    assert "outside" in res_outside.json()["detail"].lower()
+
+
+def test_safe_route_unknown_shelter():
+    """Requesting an unknown shelter ID should return 404 with a helpful validation message."""
+    response = client.post("/api/routes/safe-route", json={
+        "origin_lat": 18.526,
+        "origin_lng": 73.858,
+        "shelter_id": "shelter-unknown-xyz"
+    })
+    assert response.status_code == 404
+    assert "not found" in response.json()["detail"].lower()
+
+
+def test_safe_route_blocked_roads_no_route():
+    """When all connecting corridors are blocked, engine must return 404 and never fabricate a safe route."""
+    payload = {
+        "origin_lat": 18.526,
+        "origin_lng": 73.858,
+        "shelter_id": "shelter-b",
+        "blocked_roads": [
+            "Elevated Highway",
+            "North Hills",
+            "Riverside",
+            "Highway Ramp",
+            "East Ring"
+        ]
+    }
+    response = client.post("/api/routes/safe-route", json=payload)
+    assert response.status_code == 404
+    assert "no safe route available" in response.json()["detail"].lower()
+
+
+def test_safe_route_avoids_submerged_bridge():
+    """Default route to shelter-b must avoid the submerged Riverside Bridge and list it as avoided."""
+    response = client.post("/api/routes/safe-route", json={
+        "origin_lat": 18.526,
+        "origin_lng": 73.858,
+        "shelter_id": "shelter-b"
+    })
+    assert response.status_code == 200
+    data = response.json()
+    assert any("riverside" in h.lower() and "bridge" in h.lower() for h in data["avoided_hazards"])
+    assert "Route C" in data["route_name"]
+
+
+def test_safe_route_get_endpoint():
+    """GET /api/routes/safe-route query param interface should return 200 with valid route."""
+    response = client.get(
+        "/api/routes/safe-route?origin_lat=18.526&origin_lng=73.858&shelter_id=shelter-b&travel_mode=vehicle"
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["type"] == "Feature"
+    assert data["geometry"]["type"] == "LineString"
+    assert data["travel_mode"] == "vehicle"
+    assert data["distance_km"] == 2.4
+
+
+def test_safe_route_destination_id_compatibility():
+    """Accepts destination_id as an alias for shelter_id."""
+    response = client.post("/api/routes/safe-route", json={
+        "origin_lat": 18.526,
+        "origin_lng": 73.858,
+        "destination_id": "shelter-b"
+    })
+    assert response.status_code == 200
+    assert response.json()["geometry"]["type"] == "LineString"
+

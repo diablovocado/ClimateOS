@@ -10,7 +10,7 @@
  *   export const API_BASE = "http://localhost:8000";
  */
 
-export const API_BASE = "";
+export const API_BASE = (typeof window !== "undefined" && window.location.port === "5173") ? "" : "http://localhost:8000";
 
 // ---------------------------------------------------------------------------
 // Helper
@@ -141,3 +141,57 @@ export async function runSimulation(rainfallMmHr, waterLevelM, zoneId = "zone-a"
     }),
   });
 }
+
+// ---------------------------------------------------------------------------
+// Safe Routes  →  POST /api/routes/safe-route
+// ---------------------------------------------------------------------------
+export async function getSafeRoute(optionsOrLat, lng, shelterId, travelMode = "vehicle") {
+  /**
+   * Calculate safest evacuation route avoiding flooded roads and blocked bridges.
+   * Supports both object payload and positional arguments.
+   * @param {Object|number} optionsOrLat - Payload object or origin latitude
+   * @param {number} [lng]               - Origin longitude
+   * @param {string} [shelterId]         - Target shelter ID
+   * @param {string} [travelMode]        - "vehicle" | "pedestrian"
+   */
+  let payload;
+  if (typeof optionsOrLat === "object" && optionsOrLat !== null) {
+    payload = optionsOrLat;
+  } else {
+    payload = {
+      origin_lat: optionsOrLat,
+      origin_lng: lng,
+      shelter_id: shelterId,
+      destination_id: shelterId,
+      travel_mode: travelMode,
+      mode: travelMode,
+    };
+  }
+
+  const url = `${API_BASE}/api/routes/safe-route`;
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const data = await res.json().catch(() => null);
+    if (!res.ok) {
+      console.warn(`[API] POST /api/routes/safe-route → ${res.status}`, data);
+      return {
+        ok: false,
+        status: res.status,
+        error: data?.detail || `HTTP ${res.status}: Failed to calculate safe route`,
+      };
+    }
+    return { ok: true, ...data };
+  } catch (err) {
+    console.warn(`[API] Safe route calculation failed:`, err);
+    return {
+      ok: false,
+      status: 0,
+      error: "Routing service is unreachable. Please check backend connection.",
+    };
+  }
+}
+

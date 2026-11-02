@@ -87,7 +87,10 @@ class Recommendation(BaseModel):
 class SafeRouteRequest(BaseModel):
     origin_lat: float
     origin_lng: float
-    destination_id: str
+    destination_id: Optional[str] = None
+    shelter_id: Optional[str] = None
+    travel_mode: Optional[str] = "vehicle"
+    mode: Optional[str] = None
     blocked_roads: List[str] = []
 
 class SafeRouteResponse(BaseModel):
@@ -97,6 +100,17 @@ class SafeRouteResponse(BaseModel):
     risk_level: str
     status_color: str
     avoided_hazards: List[str]
+    type: Optional[str] = "Feature"
+    geometry: Optional[Dict[str, Any]] = None
+    duration_minutes: Optional[int] = None
+    risk_score: Optional[float] = None
+    travel_mode: Optional[str] = "vehicle"
+    status: Optional[str] = None
+    is_simulated: Optional[bool] = True
+    warnings: Optional[List[str]] = []
+    safety_disclaimer: Optional[str] = None
+    properties: Optional[Dict[str, Any]] = None
+    shelter: Optional[Dict[str, Any]] = None
 
 class SimulationEvent(BaseModel):
     step: int

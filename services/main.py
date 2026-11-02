@@ -6,7 +6,7 @@ Run with: uvicorn services.main:app --reload
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from services.routers import risk, reports, shelters, recommendations, simulation
+from services.routers import risk, reports, shelters, recommendations, simulation, routing
 
 app = FastAPI(
     title="ClimateOS API",
@@ -35,6 +35,7 @@ app.include_router(reports.router,         prefix="/api",  tags=["Citizen Report
 app.include_router(shelters.router,        prefix="/api",  tags=["Shelters"])
 app.include_router(recommendations.router, prefix="/api",  tags=["Recommendations"])
 app.include_router(simulation.router,      prefix="/api",  tags=["Simulation"])
+app.include_router(routing.router,         prefix="/api",  tags=["Safe Routing"])
 
 
 # ---------------------------------------------------------------------------
