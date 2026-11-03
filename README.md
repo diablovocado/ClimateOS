@@ -168,7 +168,7 @@ Edit **`css/base.css`** to change the visual theme for everyone:
 ## 📄 License & References
 
 - **License:** [GNU GPL v3](LICENSE)
-- **PRD:** [`ClimateOS_PRD.pdf`](ClimateOS_PRD.pdf)
+- **Product Requirements Document (PRD):** [`PRD.md`](PRD.md) | Original Hackathon PDF: [`ClimateOS_PRD.pdf`](ClimateOS_PRD.pdf)
 - **Tech Stack:** [`ClimateOS_Technical_Stack_Document.pdf`](ClimateOS_Technical_Stack_Document.pdf)
 
 ---
