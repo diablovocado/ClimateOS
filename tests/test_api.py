@@ -156,8 +156,11 @@ def test_submit_report_returns_verification():
     v = data["verification"]
     assert "confidence_score" in v
     assert "status"           in v
-    assert v["status"] in ("High Confidence", "Needs Review", "Low Confidence")
+    assert v["status"] in ("HIGH_CONFIDENCE", "NEEDS_REVIEW", "LOW_CONFIDENCE", "High Confidence", "Needs Review", "Low Confidence")
     assert 0 <= v["confidence_score"] <= 100
+    assert "factors" in v
+    assert isinstance(v["factors"], list)
+
 
 
 def test_submit_report_creates_incident():
@@ -410,4 +413,182 @@ def test_safe_route_destination_id_compatibility():
     })
     assert response.status_code == 200
     assert response.json()["geometry"]["type"] == "LineString"
+
+
+# ---------------------------------------------------------------------------
+# AI & Decision Engines Integration Tests
+# ---------------------------------------------------------------------------
+def test_spatial_risk_lookup_point_in_zone_a():
+    """GET /api/zones/risk?lat=18.526&lng=73.858 returns Zone A with explainable contributing factors."""
+    response = client.get("/api/zones/risk?lat=18.526&lng=73.858")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["id"] == "zone-a"
+    assert data["name"] == "Zone A — Riverside"
+    assert "risk_score" in data
+    assert data["risk_score"] >= 75.0
+    assert data["severity"] == "CRITICAL"
+    assert data["category"] == "CRITICAL"
+    assert "confidence" in data
+    assert "factors" in data
+    assert isinstance(data["factors"], list)
+    assert any("Rainfall intensity" in f for f in data["factors"])
+    assert any("Water level gauge" in f for f in data["factors"])
+    assert any("Terrain" in f for f in data["factors"])
+    assert "contributing_factors" in data
+    assert "xai_factors" in data
+    assert "citizen_location" in data
+
+
+def test_spatial_risk_lookup_point_in_zone_b():
+    """GET /api/zones/risk?lat=18.51&lng=73.87 returns Zone B."""
+    response = client.get("/api/zones/risk?lat=18.51&lng=73.87")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["id"] == "zone-b"
+    assert data["name"] == "Zone B — Downtown"
+
+
+def test_spatial_risk_lookup_outside_all_zones():
+    """GET /api/zones/risk with coordinates outside all monitored polygons returns 404."""
+    response = client.get("/api/zones/risk?lat=0.0&lng=0.0")
+    assert response.status_code == 404
+    assert "No risk zone found" in response.json()["detail"]
+
+
+def test_spatial_risk_lookup_missing_coordinate_returns_400():
+    """GET /api/zones/risk with only lat or only lng returns 400 Bad Request."""
+    res_lat_only = client.get("/api/zones/risk?lat=18.526")
+    assert res_lat_only.status_code == 400
+    res_lng_only = client.get("/api/zones/risk?lng=73.858")
+    assert res_lng_only.status_code == 400
+
+
+def test_all_zones_have_dynamic_risk_and_factors():
+    """GET /api/zones/risk returns all zones enriched with dynamic scores and factors."""
+    response = client.get("/api/zones/risk")
+    assert response.status_code == 200
+    zones = response.json()
+    assert len(zones) >= 5
+    for z in zones:
+        assert "risk_score" in z
+        assert "severity" in z
+        assert "confidence" in z
+        assert "factors" in z
+        assert len(z["factors"]) >= 4
+
+
+def test_ai_report_verification_and_priority_engine():
+    """Submitting a report invokes ReportVerifier and PriorityRanker with transparent factors."""
+    payload = {
+        "category": "trapped",
+        "description": "5 people trapped on rooftop due to rapid flooding",
+        "location": "Sector 4 Flood Plain",
+        "lat": 18.526,
+        "lng": 73.858,
+        "zone_id": "zone-a",
+        "trapped_count": 5,
+        "injured_count": 2,
+        "photo_attached": True
+    }
+    response = client.post("/api/reports", json=payload)
+    assert response.status_code == 200
+    data = response.json()
+
+    # Verification checks
+    v = data["verification"]
+    assert v["status"] == "HIGH_CONFIDENCE"
+    assert v["confidence_score"] >= 85.0
+    assert any("High-severity incident category match" in f for f in v["factors"])
+    assert any("Verified visual photo evidence" in f for f in v["factors"])
+    assert any("Multiple life-threat signals" in f for f in v["factors"])
+    assert any("Valid GPS coordinate lock" in f for f in v["factors"])
+
+    # Priority Ranker checks
+    inc = data["incident"]
+    assert inc["priority_score"] >= 80.0
+    assert inc["severity"] == "CRITICAL"
+    assert inc["trapped_count"] == 5
+    assert inc["injured_count"] == 2
+    assert "prediction_disclaimer" in inc
+
+
+def test_incidents_strictly_ordered_by_priority():
+    """Incidents returned by GET /api/incidents are ordered descending by priority_score."""
+    # Submit low priority report
+    client.post("/api/reports", json={
+        "category": "water_shortage",
+        "description": "Low water pressure in municipal pipe",
+        "trapped_count": 0,
+        "injured_count": 0,
+        "photo_attached": False
+    })
+    # Submit high priority report
+    client.post("/api/reports", json={
+        "category": "trapped",
+        "description": "Immediate life threat 8 people trapped",
+        "trapped_count": 8,
+        "injured_count": 3,
+        "photo_attached": True,
+        "lat": 18.526,
+        "lng": 73.858
+    })
+    incidents = client.get("/api/incidents").json()
+    assert len(incidents) >= 2
+    scores = [i["priority_score"] for i in incidents]
+    assert scores == sorted(scores, reverse=True)
+
+
+def test_recommendation_advisor_dynamic_generation_and_deduplication():
+    """Advisor triggers recommendations for high risk zones (>=75) and deduplicates pending ones."""
+    res1 = client.get("/api/recommendations")
+    assert res1.status_code == 200
+    recs1 = res1.json()
+
+    # Check high-risk evacuation recommendation exists
+    evac_recs = [r for r in recs1 if "EVAC" in r["id"]]
+    assert len(evac_recs) >= 1
+    assert any(r["priority"] == "CRITICAL" for r in evac_recs)
+
+    # Calling again must not duplicate pending recommendations
+    res2 = client.get("/api/recommendations")
+    recs2 = res2.json()
+    assert len(recs1) == len(recs2)
+
+    # All rec IDs must be unique
+    ids = [r["id"] for r in recs2]
+    assert len(ids) == len(set(ids))
+
+
+def test_recommendation_human_decision_flow():
+    """Human authority can approve or reject recommendations and status transitions cleanly."""
+    recs = client.get("/api/recommendations").json()
+    pending = next((r for r in recs if r["decision_status"] == "PENDING"), None)
+    assert pending is not None
+    target_id = pending["id"]
+
+    # Approve
+    app_res = client.post(
+        f"/api/recommendations/{target_id}/decision",
+        json={"decision": "APPROVED", "operator_id": "chief-officer-9", "notes": "Approved for dispatch."}
+    )
+    assert app_res.status_code == 200
+    assert app_res.json()["decision"] == "APPROVED"
+
+    # Verify decision persisted
+    recs_after = client.get("/api/recommendations").json()
+    decided = next(r for r in recs_after if r["id"] == target_id)
+    assert decided["decision_status"] == "APPROVED"
+    assert decided["decided_by"] == "chief-officer-9"
+
+    # Reject another
+    pending2 = next((r for r in recs_after if r["decision_status"] == "PENDING"), None)
+    if pending2:
+        rej_res = client.post(
+            f"/api/recommendations/{pending2['id']}/decision",
+            json={"decision": "REJECTED", "operator_id": "chief-officer-9", "notes": "Capacity insufficient."}
+        )
+        assert rej_res.status_code == 200
+        assert rej_res.json()["decision"] == "REJECTED"
+
 
