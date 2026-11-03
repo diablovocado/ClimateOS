@@ -43,10 +43,15 @@ export async function checkHealth() {
 // ---------------------------------------------------------------------------
 // Risk Zones  →  GET /api/zones/risk
 // ---------------------------------------------------------------------------
-export async function getZonesRisk() {
-  // TODO (Risk Engine): This will return real-time calculated zone risk once
-  // the risk prediction engine is connected to weather/sensor data feeds.
+export async function getZonesRisk(lat, lng) {
+  if (lat !== undefined && lng !== undefined && lat !== null && lng !== null) {
+    return apiFetch(`/api/zones/risk?lat=${encodeURIComponent(lat)}&lng=${encodeURIComponent(lng)}`);
+  }
   return apiFetch("/api/zones/risk");
+}
+
+export async function getZoneRiskByCoordinates(lat, lng) {
+  return apiFetch(`/api/zones/risk?lat=${encodeURIComponent(lat)}&lng=${encodeURIComponent(lng)}`);
 }
 
 export async function getZoneRisk(zoneId) {

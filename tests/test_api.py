@@ -855,4 +855,89 @@ def test_incidents_stream_reconnection_and_handshake():
     assert f"id: {eid2}" in chunks[1]
 
 
+# ---------------------------------------------------------------------------
+# Localized Risk & Shelter Navigation Tests
+# ---------------------------------------------------------------------------
+def test_citizen_geolocation_risk_lookup_returns_actual_backend_data():
+    """Point-in-polygon lookup returns authentic zone risk, severity, and advice."""
+    # Zone A centroid coordinates
+    res = client.get("/api/zones/risk?lat=18.5260&lng=73.8580")
+    assert res.status_code == 200
+    data = res.json()
+
+    assert data["id"] == "zone-a"
+    assert "Zone A" in data["name"]
+    assert data["risk_level"] == "severe"
+    assert data["risk_score"] >= 75
+    assert data["status"] in ("HIGH RISK", "CRITICAL")
+    assert data["category"] in ("CRITICAL", "HIGH", "SEVERE")
+    assert "advice" in data and len(data["advice"]) > 10
+    assert "factors" in data and len(data["factors"]) >= 3
+    assert data["citizen_location"]["lat"] == 18.5260
+    assert data["citizen_location"]["lng"] == 73.8580
+
+
+def test_citizen_geolocation_outside_tracked_zones_returns_404():
+    """Coordinates outside monitored flood zones return 404 and never fabricate a zone."""
+    res = client.get("/api/zones/risk?lat=18.1000&lng=73.2000")
+    assert res.status_code == 404
+    detail = res.json()["detail"]
+    assert "No risk zone found containing coordinates" in detail
+
+
+def test_shelter_capacity_and_availability_filtering():
+    """Shelter API provides status and occupancy enabling client to filter out FULL and STANDBY shelters."""
+    shelters = client.get("/api/shelters").json()
+    assert len(shelters) >= 5
+
+    # shelter-d is full
+    shelter_d = next((s for s in shelters if s["id"] == "shelter-d"), None)
+    assert shelter_d is not None
+    assert shelter_d["status"] == "FULL"
+
+    # shelter-e is standby
+    shelter_e = next((s for s in shelters if s["id"] == "shelter-e"), None)
+    assert shelter_e is not None
+    assert shelter_e["status"] == "STANDBY"
+
+    # Eligible shelters must be OPEN or NEAR_CAPACITY with capacity > occupancy
+    eligible = [
+        s for s in shelters
+        if s["status"] in ("OPEN", "NEAR_CAPACITY") and (s["capacity"] - s["occupancy"]) > 0
+    ]
+    assert len(eligible) >= 2
+    assert all(s["id"] not in ("shelter-d", "shelter-e") for s in eligible)
+
+
+def test_safe_route_from_citizen_coordinates_to_closest_shelter():
+    """Safe route is calculated from citizen origin to closest available shelter."""
+    res = client.post("/api/routes/safe-route", json={
+        "origin_lat": 18.5260,
+        "origin_lng": 73.8580,
+        "shelter_id": "shelter-b",
+        "travel_mode": "vehicle"
+    })
+    assert res.status_code == 200
+    data = res.json()
+    assert data["status"] in ("SIMULATED_SAFE", "SIMULATED_CAUTION")
+    assert data["shelter"]["id"] == "shelter-b"
+    assert data["distance_km"] > 0
+    assert "geometry" in data and data["geometry"]["type"] == "LineString"
+    assert len(data["geometry"]["coordinates"]) >= 2
+    assert "avoided_hazards" in data
+
+
+def test_safe_route_unknown_shelter_returns_404():
+    """Attempting to route to a non-existent shelter returns 404."""
+    res = client.post("/api/routes/safe-route", json={
+        "origin_lat": 18.5260,
+        "origin_lng": 73.8580,
+        "shelter_id": "shelter-nonexistent-999",
+        "travel_mode": "vehicle"
+    })
+    assert res.status_code == 404
+
+
+
+
 

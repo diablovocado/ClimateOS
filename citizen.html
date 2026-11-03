@@ -55,12 +55,20 @@
         <div class="loading-state">Loading shelters…</div>
       </div>
 
+      <!-- One-Click Shelter Navigation Button -->
+      <div class="glass-card" style="border-left:4px solid var(--accent-cyan);">
+        <button id="btn-navigate-closest-shelter" class="btn btn--primary" style="width:100%;padding:14px;font-size:14px;font-weight:700;display:flex;align-items:center;justify-content:center;gap:8px;" aria-label="Navigate to closest available shelter">
+          🧭 Navigate to Closest Available Shelter
+        </button>
+        <div id="shelter-nav-status" style="margin-top:8px;font-size:12px;line-height:1.4;" aria-live="polite"></div>
+      </div>
+
       <!-- Safe Route CTA -->
-      <a href="citizen-route.html" class="glass-card" style="display:flex;justify-content:space-between;align-items:center;text-decoration:none;" aria-label="View safe evacuation route">
+      <a href="citizen-route.html" id="cta-safe-route" class="glass-card" style="display:flex;justify-content:space-between;align-items:center;text-decoration:none;" aria-label="View safe evacuation route">
         <div>
           <div class="card-title">🛡️ Safe Evacuation Route</div>
-          <div style="font-size:13px;font-weight:600;color:var(--risk-low);">Route C — Elevated Highway Bypass</div>
-          <div style="font-size:12px;color:var(--text-muted);">2.4 km • ~12 mins • Safest</div>
+          <div id="cta-route-title" style="font-size:13px;font-weight:600;color:var(--risk-low);">Dynamic AI Route Navigator</div>
+          <div id="cta-route-meta" style="font-size:12px;color:var(--text-muted);">Real-time flood avoidance • Shelter routing</div>
         </div>
         <span style="color:var(--accent-cyan);font-size:20px;">→</span>
       </a>

@@ -35,6 +35,17 @@ class SafeRouteController {
       this.selectedShelterId = queryShelter;
     }
 
+    // Parse citizen origin coordinates if passed from citizen home (?lat=X&lng=Y)
+    const queryLat = parseFloat(urlParams.get("lat") || urlParams.get("origin_lat"));
+    const queryLng = parseFloat(urlParams.get("lng") || urlParams.get("origin_lng"));
+    if (!isNaN(queryLat) && !isNaN(queryLng)) {
+      this.origin = {
+        lat: queryLat,
+        lng: queryLng,
+        name: `Your Location (${queryLat.toFixed(4)}, ${queryLng.toFixed(4)})`,
+      };
+    }
+
     // Load available shelters
     try {
       const shelterData = await getShelters();
