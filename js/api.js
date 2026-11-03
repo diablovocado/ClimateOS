@@ -105,20 +105,31 @@ export async function getRecommendations() {
   return apiFetch("/api/recommendations");
 }
 
+export async function getActiveEvacuations() {
+  return apiFetch("/api/evacuations");
+}
+
+export function getIncidentsStreamUrl() {
+  return `${API_BASE}/api/incidents/stream`;
+}
+
 // ---------------------------------------------------------------------------
 // Recommendation Decision  →  POST /api/recommendations/{id}/decision
 // ---------------------------------------------------------------------------
-export async function postRecommendationDecision(recId, decision, notes = "") {
+export async function postRecommendationDecision(recId, decision, notes = "", role = "authority") {
   /**
    * @param {string} recId     - recommendation ID
    * @param {string} decision  - "APPROVED" | "REJECTED"
    * @param {string} notes     - optional operator notes
+   * @param {string} role      - official role (default: "authority")
    */
   return apiFetch(`/api/recommendations/${recId}/decision`, {
     method: "POST",
-    body: JSON.stringify({ decision, notes }),
+    headers: { "X-User-Role": role },
+    body: JSON.stringify({ decision, notes, role, operator_id: "gov-operator-1" }),
   });
 }
+
 
 // ---------------------------------------------------------------------------
 // Simulation  →  POST /api/simulation

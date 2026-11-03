@@ -5,18 +5,68 @@
  * Handles: Risk status card, nearest shelter card, geolocation
  */
 
-import { getZoneRisk, getShelters } from "../api.js";
+import { getZoneRisk, getShelters, getActiveEvacuations, getIncidentsStreamUrl } from "../api.js";
+
+// ---------------------------------------------------------------------------
+// Active Evacuation Alert Banner (Human Authority Decision)
+// ---------------------------------------------------------------------------
+let _citizenEventSource = null;
+
+export async function loadActiveEvacuationAlert() {
+  const banner = document.getElementById("citizen-emergency-alert");
+  if (!banner) return;
+
+  const evacuations = await getActiveEvacuations();
+  const hasActiveEvac = evacuations && evacuations.length > 0;
+
+  if (hasActiveEvac) {
+    // Authorized emergency evacuation order active
+    const evac = evacuations[0];
+    banner.style.borderLeft = "4px solid var(--risk-severe)";
+    banner.style.background = "linear-gradient(135deg, rgba(239,68,68,0.18), rgba(220,38,38,0.10))";
+    banner.innerHTML = `
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">
+        <span class="risk-badge risk-badge--severe pulse">🚨 MANDATORY EVACUATION ORDER</span>
+        <span class="tag tag--danger">OFFICIAL DIRECTIVE</span>
+      </div>
+      <p style="font-size:14px;font-weight:700;color:var(--text-primary);line-height:1.5;">
+        ${evac.title}: ${evac.description}
+      </p>
+      <div style="font-size:12px;color:var(--text-secondary);margin-top:4px;">
+        Authorized by: <strong>${evac.approved_by || "Emergency Command"}</strong> &bull; Updated: ${new Date(evac.timestamp).toLocaleTimeString()}
+      </div>
+      <button id="btn-use-location" class="btn btn--cyan" style="margin-top:10px;width:100%;" aria-label="Use GPS to detect your zone">
+        📍 Use My Location
+      </button>
+    `;
+  } else {
+    // Normal watch / advisory state (Unapproved AI recommendations are never treated as official orders)
+    banner.style.borderLeft = "4px solid var(--risk-high)";
+    banner.style.background = "linear-gradient(135deg,rgba(249,115,22,0.12),rgba(234,179,8,0.06))";
+    banner.innerHTML = `
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">
+        <span class="risk-badge risk-badge--high">⚠️ FLOOD ADVISORY MONITORING</span>
+        <span class="tag">NO ACTIVE EVACUATION ORDER</span>
+      </div>
+      <p style="font-size:14px;font-weight:600;color:var(--text-primary);line-height:1.5;">
+        High water advisory active in low-lying sectors. No mandatory evacuation has been authorized.
+        Stay alert, monitor official notifications, and check nearby shelter availability.
+      </p>
+      <button id="btn-use-location" class="btn btn--cyan" style="margin-top:10px;width:100%;" aria-label="Use GPS to detect your zone">
+        📍 Use My Location
+      </button>
+    `;
+  }
+  setupLocationButton();
+}
 
 // ---------------------------------------------------------------------------
 // Risk Status Card
 // ---------------------------------------------------------------------------
-async function loadRiskStatus() {
+export async function loadRiskStatus() {
   const card = document.getElementById("citizen-risk-card");
   if (!card) return;
 
-  // TODO (Personalization Engine): Use navigator.geolocation to get user's
-  // real position, then call GET /api/zones/risk?lat=X&lng=Y for zone lookup.
-  // For now, default to Zone A as demo.
   const zone = await getZoneRisk("zone-a");
 
   if (!zone) {
@@ -59,22 +109,20 @@ function buildRiskCard(zone) {
 // ---------------------------------------------------------------------------
 // Nearest Shelter Card
 // ---------------------------------------------------------------------------
-async function loadNearestShelters() {
+export async function loadNearestShelters() {
   const card = document.getElementById("citizen-shelter-card");
   if (!card) return;
 
   const shelters = await getShelters();
 
-  // TODO (Shelter Intelligence): Sort by distance from user's geolocation.
-  // For now, show first 2 available (not FULL) shelters from the list.
   const available = shelters
-    ? shelters.filter(s => s.status !== "FULL").slice(0, 2)
+    ? shelters.filter(s => s.status !== "FULL" && s.status !== "STANDBY").slice(0, 2)
     : _fallbackShelters();
 
   card.innerHTML = `
     <div class="card-title">🏥 Nearest Safe Shelters</div>
     ${available.map(s => buildShelterRow(s)).join("")}
-    <a href="shelters.html" class="view-all-link">View all shelters →</a>
+    <a href="citizen-shelters.html" class="view-all-link">View all shelters →</a>
   `;
 }
 
@@ -86,7 +134,7 @@ function buildShelterRow(shelter) {
       <div class="shelter-row__name">${shelter.name}</div>
       <div class="shelter-row__meta">
         ${shelter.distance_km} km away &bull;
-        <span style="color:${statusColor[shelter.status] || 'var(--risk-moderate)'};">${shelter.status}</span> &bull;
+        <span style="color:${statusColor[shelter.status] || 'var(--risk-moderate)'};font-weight:600;">${shelter.status}</span> &bull;
         ${shelter.occupancy}/${shelter.capacity} occupied (${pct}%)
       </div>
     </div>
@@ -107,7 +155,7 @@ function setupLocationButton() {
   const btn = document.getElementById("btn-use-location");
   if (!btn) return;
 
-  btn.addEventListener("click", () => {
+  btn.onclick = () => {
     if (!navigator.geolocation) {
       alert("Geolocation is not supported by your browser.");
       return;
@@ -116,22 +164,55 @@ function setupLocationButton() {
     navigator.geolocation.getCurrentPosition(
       (pos) => {
         btn.textContent = `📍 Location: ${pos.coords.latitude.toFixed(4)}, ${pos.coords.longitude.toFixed(4)}`;
-        // TODO (Personalization Engine): Send coords to GET /api/zones/risk?lat=X&lng=Y
-        // and update the risk card with the user's actual zone.
       },
       () => {
         btn.textContent = "📍 Use My Location";
         alert("Unable to access location. Please enable location permissions.");
       }
     );
-  });
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Real-Time SSE Stream for Citizen UI
+// ---------------------------------------------------------------------------
+export function initCitizenStream() {
+  if (typeof EventSource === "undefined") return;
+  if (_citizenEventSource) return;
+
+  try {
+    const sseUrl = getIncidentsStreamUrl();
+    _citizenEventSource = new EventSource(sseUrl);
+
+    _citizenEventSource.addEventListener("evacuation", () => {
+      loadActiveEvacuationAlert();
+    });
+
+    _citizenEventSource.addEventListener("shelter", () => {
+      loadNearestShelters();
+    });
+
+    _citizenEventSource.addEventListener("decision", () => {
+      loadActiveEvacuationAlert();
+      loadNearestShelters();
+    });
+
+    _citizenEventSource.onerror = () => {
+      // Automatic reconnect
+    };
+  } catch (e) {
+    console.warn("Could not initialize citizen SSE stream:", e);
+  }
 }
 
 // ---------------------------------------------------------------------------
 // Init
 // ---------------------------------------------------------------------------
 document.addEventListener("DOMContentLoaded", () => {
+  loadActiveEvacuationAlert();
   loadRiskStatus();
   loadNearestShelters();
   setupLocationButton();
+  initCitizenStream();
 });
+

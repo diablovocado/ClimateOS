@@ -3,7 +3,7 @@
  * File owner: Citizen Mode / Shelter Intelligence team
  */
 
-import { getShelters } from "../api.js";
+import { getShelters, getIncidentsStreamUrl } from "../api.js";
 
 const STATUS_META = {
   OPEN:          { label: "Open",         color: "var(--risk-low)",      icon: "✅" },
@@ -12,11 +12,11 @@ const STATUS_META = {
   STANDBY:       { label: "Standby",       color: "var(--text-muted)",    icon: "⏸️" },
 };
 
-async function loadShelters() {
+let _shelterEventSource = null;
+
+export async function loadShelters() {
   const listEl = document.getElementById("shelter-list");
   if (!listEl) return;
-
-  listEl.innerHTML = `<div class="loading-state">Loading shelters…</div>`;
 
   const shelters = await getShelters();
   if (!shelters || shelters.length === 0) {
@@ -25,6 +25,30 @@ async function loadShelters() {
   }
 
   listEl.innerHTML = shelters.map(s => buildShelterCard(s)).join("");
+}
+
+export function initSheltersStream() {
+  if (typeof EventSource === "undefined") return;
+  if (_shelterEventSource) return;
+
+  try {
+    const sseUrl = getIncidentsStreamUrl();
+    _shelterEventSource = new EventSource(sseUrl);
+
+    _shelterEventSource.addEventListener("shelter", () => {
+      loadShelters();
+    });
+
+    _shelterEventSource.addEventListener("decision", () => {
+      loadShelters();
+    });
+
+    _shelterEventSource.onerror = () => {
+      // Automatic reconnect
+    };
+  } catch (e) {
+    console.warn("Could not initialize shelters SSE stream:", e);
+  }
 }
 
 function buildShelterCard(s) {
@@ -60,4 +84,8 @@ function buildShelterCard(s) {
   `;
 }
 
-document.addEventListener("DOMContentLoaded", loadShelters);
+document.addEventListener("DOMContentLoaded", () => {
+  loadShelters();
+  initSheltersStream();
+});
+

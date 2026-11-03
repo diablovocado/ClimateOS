@@ -592,3 +592,267 @@ def test_recommendation_human_decision_flow():
         assert rej_res.json()["decision"] == "REJECTED"
 
 
+# ---------------------------------------------------------------------------
+# Closed-Loop Citizen & Government Real-Time Interaction Tests
+# ---------------------------------------------------------------------------
+from services.events import event_broadcaster
+
+
+def test_event_broadcaster_pub_sub_and_multi_client():
+    """EventBroadcaster distributes events to multiple subscribers and cleans up on unsubscribe."""
+    initial_subs = event_broadcaster.get_subscriber_count()
+    q1 = event_broadcaster.subscribe()
+    q2 = event_broadcaster.subscribe()
+    assert event_broadcaster.get_subscriber_count() == initial_subs + 2
+
+    eid = event_broadcaster.broadcast("test_event", {"msg": "broadcast-check"})
+    assert eid > 0
+
+    assert not q1.empty()
+    assert not q2.empty()
+
+    ev1 = q1.get_nowait()
+    ev2 = q2.get_nowait()
+
+    assert ev1[0] == eid
+    assert ev1[1] == "test_event"
+    assert ev1[2]["msg"] == "broadcast-check"
+    assert ev2 == ev1
+
+    # Unsubscribe q1; only q2 receives next event
+    event_broadcaster.unsubscribe(q1)
+    assert event_broadcaster.get_subscriber_count() == initial_subs + 1
+
+    eid2 = event_broadcaster.broadcast("test_event_2", {"msg": "only-q2"})
+    assert q1.empty()
+    assert not q2.empty()
+    assert q2.get_nowait()[0] == eid2
+
+    event_broadcaster.unsubscribe(q2)
+
+
+def test_event_broadcaster_reconnection_last_event_id():
+    """Clients can retrieve missed events using Last-Event-ID for reconnection resilience."""
+    event_broadcaster.clear()
+    eid1 = event_broadcaster.broadcast("incident", {"num": 1})
+    eid2 = event_broadcaster.broadcast("incident", {"num": 2})
+    eid3 = event_broadcaster.broadcast("incident", {"num": 3})
+
+    missed = event_broadcaster.get_events_since(eid1)
+    assert len(missed) == 2
+    assert missed[0][0] == eid2
+    assert missed[1][0] == eid3
+    assert missed[0][2]["num"] == 2
+    assert missed[1][2]["num"] == 3
+
+
+def test_citizen_report_submission_broadcasts_sanitized_event():
+    """Submitting a citizen report broadcasts an incident event without exposing private reporter info."""
+    q = event_broadcaster.subscribe()
+    try:
+        report_payload = {
+            "category": "trapped",
+            "description": "Family trapped in bungalow near riverside road",
+            "location": "Riverside Bungalow 42",
+            "lat": 18.5204,
+            "lng": 73.8567,
+            "trapped_count": 4,
+            "injured_count": 1,
+            "photo_attached": True,
+            "reporter_id": "citizen-secret-aadhaar-1234",
+        }
+        res = client.post("/api/reports", json=report_payload)
+        assert res.status_code == 200
+
+        # Verify broadcast event received
+        assert not q.empty()
+        event_id, event_type, payload = q.get_nowait()
+
+        assert event_type == "incident"
+        assert payload["category"] == "trapped"
+        assert payload["location"] == "Riverside Bungalow 42"
+        assert payload["lat"] == 18.5204
+        assert payload["lng"] == 73.8567
+        assert payload["trapped_count"] == 4
+        assert payload["injured_count"] == 1
+        assert "severity" in payload
+        assert "verification_status" in payload
+        assert "timestamp" in payload
+
+        # Privacy protection: reporter_id must NOT be exposed in the broadcast
+        assert "reporter_id" not in payload
+        assert "citizen-secret-aadhaar-1234" not in str(payload)
+    finally:
+        event_broadcaster.unsubscribe(q)
+
+
+def test_unauthorized_recommendation_decision_forbidden():
+    """Unauthorized callers (citizens, anonymous users) are blocked with 403 Forbidden."""
+    recs = client.get("/api/recommendations").json()
+    rec_id = recs[0]["id"]
+
+    # Citizen role in payload
+    res1 = client.post(
+        f"/api/recommendations/{rec_id}/decision",
+        json={"decision": "APPROVED", "role": "citizen", "operator_id": "citizen-101"}
+    )
+    assert res1.status_code == 403
+    assert "Forbidden" in res1.json()["detail"]
+
+    # Citizen prefix in operator_id
+    res2 = client.post(
+        f"/api/recommendations/{rec_id}/decision",
+        json={"decision": "APPROVED", "operator_id": "citizen-jane"}
+    )
+    assert res2.status_code == 403
+
+    # Anonymous operator
+    res3 = client.post(
+        f"/api/recommendations/{rec_id}/decision",
+        json={"decision": "APPROVED", "operator_id": "anonymous"}
+    )
+    assert res3.status_code == 403
+
+    # Citizen in X-User-Role header
+    res4 = client.post(
+        f"/api/recommendations/{rec_id}/decision",
+        headers={"X-User-Role": "citizen"},
+        json={"decision": "APPROVED", "operator_id": "unknown"}
+    )
+    assert res4.status_code == 403
+
+
+def test_authorized_shelter_recommendation_approval():
+    """Approving a shelter recommendation updates target shelter status to OPEN and broadcasts shelter event."""
+    q = event_broadcaster.subscribe()
+    try:
+        # Find or use shelter recommendation
+        recs = client.get("/api/recommendations").json()
+        shelter_rec = next((r for r in recs if "SHELTER" in r["id"] or r.get("type") == "SHELTER_ACTIVATION"), None)
+        assert shelter_rec is not None
+        rec_id = shelter_rec["id"]
+
+        res = client.post(
+            f"/api/recommendations/{rec_id}/decision",
+            headers={"X-User-Role": "official"},
+            json={"decision": "APPROVED", "operator_id": "gov-commander-1", "notes": "Open shelter for overflow."}
+        )
+        assert res.status_code == 200
+        assert res.json()["decision"] == "APPROVED"
+
+        # Check shelter data in GET /api/shelters
+        shelters = client.get("/api/shelters").json()
+        shelter_b = next((s for s in shelters if s["id"] == "shelter-b"), None)
+        assert shelter_b is not None
+        assert shelter_b["status"] == "OPEN"
+
+        # Verify broadcast event
+        events = []
+        while not q.empty():
+            events.append(q.get_nowait())
+
+        shelter_events = [e for e in events if e[1] == "shelter"]
+        assert len(shelter_events) >= 1
+        assert shelter_events[0][2]["decision"] == "APPROVED"
+        assert shelter_events[0][2]["shelter"]["status"] == "OPEN"
+    finally:
+        event_broadcaster.unsubscribe(q)
+
+
+def test_authorized_evacuation_recommendation_approval():
+    """Approving an evacuation recommendation creates an active evacuation directive and broadcasts alert."""
+    q = event_broadcaster.subscribe()
+    try:
+        recs = client.get("/api/recommendations").json()
+        evac_rec = next((r for r in recs if "EVAC" in r["id"] or r.get("type") == "EVACUATION"), None)
+        assert evac_rec is not None
+        rec_id = evac_rec["id"]
+
+        res = client.post(
+            f"/api/recommendations/{rec_id}/decision",
+            headers={"X-User-Role": "authority"},
+            json={"decision": "APPROVED", "operator_id": "disaster-management-hq", "notes": "Mandatory evacuation authorized."}
+        )
+        assert res.status_code == 200
+
+        # Verify active evacuations endpoint
+        evacs = client.get("/api/evacuations").json()
+        assert len(evacs) >= 1
+        zone_evac = next((e for e in evacs if e["zone_id"] == (evac_rec.get("target_zone") or "zone-a")), None)
+        assert zone_evac is not None
+        assert zone_evac["status"] == "ACTIVE_EVACUATION"
+        assert zone_evac["approved_by"] == "disaster-management-hq"
+
+        # Verify broadcast event
+        events = []
+        while not q.empty():
+            events.append(q.get_nowait())
+
+        evac_events = [e for e in events if e[1] == "evacuation"]
+        assert len(evac_events) >= 1
+        assert evac_events[0][2]["decision"] == "APPROVED"
+        assert evac_events[0][2]["alert"]["status"] == "ACTIVE_EVACUATION"
+    finally:
+        event_broadcaster.unsubscribe(q)
+
+
+def test_rejected_recommendation_does_not_activate_evacuation():
+    """Rejected recommendations must not activate evacuation orders or alter shelter status."""
+    recs = client.get("/api/recommendations").json()
+    rec = next((r for r in recs if "EVAC" in r["id"] or r.get("type") == "EVACUATION"), recs[0])
+    rec_id = rec["id"]
+
+    res = client.post(
+        f"/api/recommendations/{rec_id}/decision",
+        headers={"X-User-Role": "authority"},
+        json={"decision": "REJECTED", "operator_id": "field-evaluator-2", "notes": "Dike holding; evacuation not warranted."}
+    )
+    assert res.status_code == 200
+    assert res.json()["decision"] == "REJECTED"
+
+    # Verify that this rejected rec is NOT in active evacuations
+    evacs = client.get("/api/evacuations").json()
+    assert not any(e.get("rec_id") == rec_id for e in evacs)
+
+
+def test_unapproved_ai_recommendations_not_treated_as_active_orders():
+    """Pending AI recommendations are advisory and must never be treated as active government orders."""
+    recs = client.get("/api/recommendations").json()
+    pending_recs = [r for r in recs if r.get("decision_status") == "PENDING"]
+    assert len(pending_recs) >= 1
+
+    evacs = client.get("/api/evacuations").json()
+    for pending in pending_recs:
+        assert not any(e.get("rec_id") == pending["id"] for e in evacs)
+
+
+def test_incidents_stream_reconnection_and_handshake():
+    """Directly test stream generator yields handshake and replays missed events."""
+    import asyncio
+    from services.routers.reports import stream_incidents
+
+    event_broadcaster.clear()
+    eid1 = event_broadcaster.broadcast("incident", {"id": "INC-TEST-1", "location": "Test Loc 1"})
+    eid2 = event_broadcaster.broadcast("incident", {"id": "INC-TEST-2", "location": "Test Loc 2"})
+
+    class MockRequest:
+        async def is_disconnected(self):
+            return True
+
+    async def run_stream():
+        streaming_resp = await stream_incidents(request=MockRequest(), last_event_id=str(eid1))
+        chunks = []
+        async for chunk in streaming_resp.body_iterator:
+            chunks.append(chunk)
+            if len(chunks) >= 2:
+                break
+        return chunks
+
+    chunks = asyncio.run(run_stream())
+    assert len(chunks) >= 2
+    assert "event: connected" in chunks[0]
+    assert "INC-TEST-2" in chunks[1]
+    assert f"id: {eid2}" in chunks[1]
+
+
+

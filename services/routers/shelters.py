@@ -44,3 +44,27 @@ def get_shelter(shelter_id: str):
     if shelter is None:
         raise HTTPException(status_code=404, detail=f"Shelter '{shelter_id}' not found")
     return shelter
+
+
+def update_shelter_status(shelter_identifier: str, status: str = "OPEN", occupancy: int = None) -> dict:
+    """
+    Update status and occupancy of a shelter matching by ID, name, or zone.
+    Returns the updated shelter dictionary if found.
+    """
+    ident_lower = shelter_identifier.lower().strip()
+    target = None
+    for s in _SHELTERS:
+        if (s["id"].lower() == ident_lower or
+            ident_lower in s["id"].lower() or
+            ident_lower in s["name"].lower() or
+            (s.get("zone_id") and ident_lower == s["zone_id"].lower())):
+            target = s
+            break
+
+    if target:
+        target["status"] = status
+        if occupancy is not None:
+            target["occupancy"] = occupancy
+        return target
+    return None
+
