@@ -29,6 +29,7 @@ export default defineConfig({
         'citizen-shelters':'citizen-shelters.html',
         'citizen-route':   'citizen-route.html',
         government:        'government.html',
+        stitch:            'stitch_climateos_disaster_intelligence_platform/code.html',
       }
     }
   }
